@@ -46,6 +46,7 @@ _DOCUMENT_TEMPLATE = Environment(
     <title>{{ title }}</title>
     {% if author %}<meta name="author" content="{{ author }}">{% endif %}
     {% if date %}<meta name="date" content="{{ date }}">{% endif %}
+    {% if katex_css_path %}<link rel="stylesheet" href="{{ katex_css_path }}">{% endif %}
     <style>
       /* TODO: Revisit this as a minimal theming system so page margins and
          related layout spacing can be configured intentionally instead of
@@ -115,6 +116,19 @@ _DOCUMENT_TEMPLATE = Environment(
       }
       .mdcc-caption--chart {
         margin: 0.5rem 0 0;
+      }
+      .mdcc-math-display {
+        text-align: center;
+        margin: 1rem 0;
+      }
+      .mdcc-math-inline {
+        display: inline;
+      }
+      .mdcc-math-fallback {
+        font-family: monospace;
+        background-color: #f3f4f6;
+        padding: 0.1rem 0.3rem;
+        border-radius: 0.2rem;
       }
       .mdcc-mermaid {
         text-align: center;
@@ -286,10 +300,16 @@ def _render_markdown_node(
     node: MarkdownNode,
     reference_registry: ReferenceRegistry,
 ) -> str:
+    text, math_placeholders = _extract_and_replace_math(node.text)
+
     try:
-        tokens_result, state = _MARKDOWN_AST_RENDERER.parse(node.text)
+        tokens_result, state = _MARKDOWN_AST_RENDERER.parse(text)
         tokens = cast(list[dict[str, Any]], tokens_result)
-        _replace_references_in_tokens(tokens, node, reference_registry)
+        _replace_references_in_tokens(
+            tokens,
+            MarkdownNode(node_id=node.node_id, text=text, location=node.location),
+            reference_registry,
+        )
         renderer = cast(mistune.HTMLRenderer, _MARKDOWN_RENDERER.renderer)
         html = renderer.render_tokens(tokens, state)
     except Exception as exc:
@@ -306,6 +326,7 @@ def _render_markdown_node(
         ) from exc
 
     html = _render_mermaid_blocks(html)
+    html = _restore_math_placeholders(html, math_placeholders)
 
     return (
         f'<section class="mdcc-markdown" data-node-id="{node.node_id}">{html}</section>'
@@ -504,6 +525,7 @@ def _render_template(frontmatter: Frontmatter | None, body_fragments: list[str])
         date=date,
         show_frontmatter=show_frontmatter,
         body_html=Markup("\n".join(body_fragments)),
+        katex_css_path=_find_katex_css(),
     )
 
 
@@ -622,6 +644,129 @@ def _render_mermaid_blocks(html_text: str) -> str:
         return _render_mermaid_to_svg(code)
 
     return _MERMAID_BLOCK_RE.sub(replace_match, html_text)
+
+
+_DISPLAY_MATH_PLACEHOLDER = "MDCC_DISPLAY_MATH_{}"
+_INLINE_MATH_PLACEHOLDER = "MDCC_INLINE_MATH_{}"
+_DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+_INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$|\s)(.+?)(?<!\s)\$(?!\$)")
+
+_KATEX_CSS_PATH: str | None | bool = None
+
+
+def _find_katex_css() -> str | None:
+    global _KATEX_CSS_PATH
+    if _KATEX_CSS_PATH is not None:
+        if _KATEX_CSS_PATH is False:
+            return None
+        return cast(str, _KATEX_CSS_PATH)
+
+    npx = shutil.which("npx")
+    if npx is not None:
+        try:
+            result = subprocess.run(
+                [npx, "--yes", "--package=katex", "katex", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                resolve = subprocess.run(
+                    ["node", "-e", "console.log(require.resolve('katex/dist/katex.min.css'))"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env={
+                        **__import__("os").environ,
+                        "NODE_PATH": str(
+                            Path.home() / ".npm" / "_npx"
+                        ),
+                    },
+                )
+                if resolve.returncode == 0 and resolve.stdout.strip():
+                    css_path = resolve.stdout.strip()
+                    if Path(css_path).exists():
+                        _KATEX_CSS_PATH = Path(css_path).as_uri()
+                        return cast(str, _KATEX_CSS_PATH)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    for npx_dir in Path.home().glob(".npm/_npx/*/node_modules/katex/dist/katex.min.css"):
+        _KATEX_CSS_PATH = npx_dir.as_uri()
+        return cast(str, _KATEX_CSS_PATH)
+
+    _KATEX_CSS_PATH = False
+    return None
+
+
+def _render_katex(latex: str, *, display: bool) -> str:
+    npx = shutil.which("npx")
+    if npx is None:
+        return _math_fallback(latex, display=display)
+
+    cmd = [npx, "--yes", "--package=katex", "katex"]
+    if display:
+        cmd.append("--display-mode")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            input=latex,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return _math_fallback(latex, display=display)
+
+    if result.returncode != 0:
+        return _math_fallback(latex, display=display)
+
+    html_out = result.stdout.strip()
+    if display:
+        return f'<div class="mdcc-math-display">{html_out}</div>'
+    return f'<span class="mdcc-math-inline">{html_out}</span>'
+
+
+def _math_fallback(latex: str, *, display: bool) -> str:
+    escaped = html_module.escape(latex)
+    if display:
+        return f'<div class="mdcc-math-display mdcc-math-fallback"><code>{escaped}</code></div>'
+    return f'<code class="mdcc-math-fallback">{escaped}</code>'
+
+
+def _extract_and_replace_math(
+    text: str,
+) -> tuple[str, dict[str, tuple[str, bool]]]:
+    placeholders: dict[str, tuple[str, bool]] = {}
+    counter = 0
+
+    def replace_display(match: re.Match[str]) -> str:
+        nonlocal counter
+        latex = match.group(1).strip()
+        key = _DISPLAY_MATH_PLACEHOLDER.format(counter)
+        placeholders[key] = (latex, True)
+        counter += 1
+        return key
+
+    def replace_inline(match: re.Match[str]) -> str:
+        nonlocal counter
+        latex = match.group(1).strip()
+        key = _INLINE_MATH_PLACEHOLDER.format(counter)
+        placeholders[key] = (latex, False)
+        counter += 1
+        return key
+
+    text = _DISPLAY_MATH_RE.sub(replace_display, text)
+    text = _INLINE_MATH_RE.sub(replace_inline, text)
+    return text, placeholders
+
+
+def _restore_math_placeholders(html_text: str, placeholders: dict[str, tuple[str, bool]]) -> str:
+    for key, (latex, display) in placeholders.items():
+        rendered = _render_katex(latex, display=display)
+        html_text = html_text.replace(key, rendered)
+    return html_text
 
 
 __all__ = ["assemble_document", "render_intermediate_document"]
