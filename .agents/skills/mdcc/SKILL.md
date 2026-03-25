@@ -155,7 +155,7 @@ Use `mdcc_table` blocks only when you need computed tables (DataFrames from code
 
 ## Math Equations
 
-LaTeX math expressions are rendered via KaTeX (requires `npx` and `katex`).
+LaTeX math expressions are rendered to MathML via `latex2mathml` (pure Python, no external tools needed).
 
 **Inline math** — wrap with single dollar signs (no spaces after opening or before closing `$`):
 
@@ -169,13 +169,13 @@ The standard deviation is $\sigma = \sqrt{\frac{1}{n}\sum (x_i - \bar{x})^2}$.
 $$E = mc^2$$
 ```
 
-If KaTeX is not installed, math falls back to monospace code styling.
+If a LaTeX expression cannot be parsed, it falls back to monospace code styling.
 
 ---
 
 ## Mermaid Diagrams
 
-Mermaid fenced code blocks are rendered to inline SVG images (requires `mmdc` from `@mermaid-js/mermaid-cli`).
+Mermaid fenced code blocks are rendered to inline SVG images. Requires `mmdc` (mermaid-cli) installed and on PATH. Install: `npm install -g @mermaid-js/mermaid-cli`.
 
 ````markdown
 ```mermaid
@@ -185,7 +185,7 @@ flowchart LR
 ```
 ````
 
-Supported diagram types: flowchart, sequence, pie, xychart-beta, quadrantChart, gantt, etc. If `mmdc` is not available, the diagram falls back to a styled code block.
+Supported diagram types: flowchart, sequence, pie, xychart-beta, quadrantChart, gantt, etc. If `mmdc` is not on PATH, diagrams fall back to a styled code block.
 
 ---
 

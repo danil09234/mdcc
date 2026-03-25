@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import latex2mathml.converter
 import mistune
 from jinja2 import Environment, select_autoescape
 from markupsafe import Markup, escape
@@ -46,7 +47,6 @@ _DOCUMENT_TEMPLATE = Environment(
     <title>{{ title }}</title>
     {% if author %}<meta name="author" content="{{ author }}">{% endif %}
     {% if date %}<meta name="date" content="{{ date }}">{% endif %}
-    {% if katex_css_path %}<link rel="stylesheet" href="{{ katex_css_path }}">{% endif %}
     <style>
       /* TODO: Revisit this as a minimal theming system so page margins and
          related layout spacing can be configured intentionally instead of
@@ -525,7 +525,6 @@ def _render_template(frontmatter: Frontmatter | None, body_fragments: list[str])
         date=date,
         show_frontmatter=show_frontmatter,
         body_html=Markup("\n".join(body_fragments)),
-        katex_css_path=_find_katex_css(),
     )
 
 
@@ -558,35 +557,8 @@ _MERMAID_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-_MMDC_PATH: str | None = None
-
-
 def _find_mmdc() -> str | None:
-    global _MMDC_PATH
-    if _MMDC_PATH is not None:
-        return _MMDC_PATH
-
-    path = shutil.which("mmdc")
-    if path is not None:
-        _MMDC_PATH = path
-        return path
-
-    npx = shutil.which("npx")
-    if npx is not None:
-        try:
-            result = subprocess.run(
-                [npx, "--yes", "--package=@mermaid-js/mermaid-cli", "mmdc", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                _MMDC_PATH = "npx"
-                return "npx"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    return None
+    return shutil.which("mmdc")
 
 
 def _render_mermaid_to_svg(code: str) -> str:
@@ -603,18 +575,9 @@ def _render_mermaid_to_svg(code: str) -> str:
         output_path = Path(tmp) / "output.svg"
         input_path.write_text(code, encoding="utf-8")
 
-        if mmdc == "npx":
-            cmd = [
-                "npx", "--yes", "--package=@mermaid-js/mermaid-cli",
-                "mmdc", "-i", str(input_path), "-o", str(output_path),
-                "-b", "transparent",
-            ]
-        else:
-            cmd = [mmdc, "-i", str(input_path), "-o", str(output_path), "-b", "transparent"]
-
         try:
             result = subprocess.run(
-                cmd,
+                [mmdc, "-i", str(input_path), "-o", str(output_path), "-b", "transparent"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -651,88 +614,19 @@ _INLINE_MATH_PLACEHOLDER = "MDCC_INLINE_MATH_{}"
 _DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
 _INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$|\s)(.+?)(?<!\s)\$(?!\$)")
 
-_KATEX_CSS_PATH: str | None | bool = None
 
-
-def _find_katex_css() -> str | None:
-    global _KATEX_CSS_PATH
-    if _KATEX_CSS_PATH is not None:
-        if _KATEX_CSS_PATH is False:
-            return None
-        return cast(str, _KATEX_CSS_PATH)
-
-    npx = shutil.which("npx")
-    if npx is not None:
-        try:
-            result = subprocess.run(
-                [npx, "--yes", "--package=katex", "katex", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                resolve = subprocess.run(
-                    ["node", "-e", "console.log(require.resolve('katex/dist/katex.min.css'))"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    env={
-                        **__import__("os").environ,
-                        "NODE_PATH": str(
-                            Path.home() / ".npm" / "_npx"
-                        ),
-                    },
-                )
-                if resolve.returncode == 0 and resolve.stdout.strip():
-                    css_path = resolve.stdout.strip()
-                    if Path(css_path).exists():
-                        _KATEX_CSS_PATH = Path(css_path).as_uri()
-                        return cast(str, _KATEX_CSS_PATH)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    for npx_dir in Path.home().glob(".npm/_npx/*/node_modules/katex/dist/katex.min.css"):
-        _KATEX_CSS_PATH = npx_dir.as_uri()
-        return cast(str, _KATEX_CSS_PATH)
-
-    _KATEX_CSS_PATH = False
-    return None
-
-
-def _render_katex(latex: str, *, display: bool) -> str:
-    npx = shutil.which("npx")
-    if npx is None:
-        return _math_fallback(latex, display=display)
-
-    cmd = [npx, "--yes", "--package=katex", "katex"]
-    if display:
-        cmd.append("--display-mode")
-
+def _render_math(latex: str, *, display: bool) -> str:
     try:
-        result = subprocess.run(
-            cmd,
-            input=latex,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return _math_fallback(latex, display=display)
-
-    if result.returncode != 0:
-        return _math_fallback(latex, display=display)
-
-    html_out = result.stdout.strip()
-    if display:
-        return f'<div class="mdcc-math-display">{html_out}</div>'
-    return f'<span class="mdcc-math-inline">{html_out}</span>'
-
-
-def _math_fallback(latex: str, *, display: bool) -> str:
-    escaped = html_module.escape(latex)
-    if display:
-        return f'<div class="mdcc-math-display mdcc-math-fallback"><code>{escaped}</code></div>'
-    return f'<code class="mdcc-math-fallback">{escaped}</code>'
+        mathml = latex2mathml.converter.convert(latex)
+        if display:
+            mathml = mathml.replace('display="inline"', 'display="block"')
+            return f'<div class="mdcc-math-display">{mathml}</div>'
+        return f'<span class="mdcc-math-inline">{mathml}</span>'
+    except Exception:
+        escaped = html_module.escape(latex)
+        if display:
+            return f'<div class="mdcc-math-display mdcc-math-fallback"><code>{escaped}</code></div>'
+        return f'<code class="mdcc-math-fallback">{escaped}</code>'
 
 
 def _extract_and_replace_math(
@@ -764,7 +658,7 @@ def _extract_and_replace_math(
 
 def _restore_math_placeholders(html_text: str, placeholders: dict[str, tuple[str, bool]]) -> str:
     for key, (latex, display) in placeholders.items():
-        rendered = _render_katex(latex, display=display)
+        rendered = _render_math(latex, display=display)
         html_text = html_text.replace(key, rendered)
     return html_text
 
