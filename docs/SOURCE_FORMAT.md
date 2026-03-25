@@ -109,6 +109,43 @@ Resolution rules:
 
 ---
 
+## 3.5 Markdown Tables
+
+Standard markdown pipe-tables are supported in narrative sections and render as styled HTML tables in the PDF:
+
+```markdown
+| Metric | Value | Status |
+|--------|-------|--------|
+| Score  | 0.85  | Pass   |
+```
+
+These are distinct from `mdcc_table` blocks: markdown tables are static text, while `mdcc_table` blocks execute Python code to produce a DataFrame.
+
+## 3.6 Math Equations (LaTeX via KaTeX)
+
+LaTeX math expressions are supported in narrative sections. Requires `npx` and the `katex` npm package (auto-installed).
+
+- **Inline math**: `$\sigma^2$` — single dollar signs, no space after opening or before closing `$`
+- **Display math**: `$$E = mc^2$$` — double dollar signs, rendered centered on its own line
+
+Math expressions are extracted before markdown parsing to prevent conflicts between LaTeX syntax (`_`, `^`) and markdown formatting. If KaTeX is not available, expressions fall back to monospace code styling.
+
+## 3.7 Mermaid Diagrams
+
+Mermaid fenced code blocks in narrative sections are rendered to inline SVG images. Requires `mmdc` from `@mermaid-js/mermaid-cli` (discoverable via `PATH` or `npx`).
+
+````markdown
+```mermaid
+flowchart LR
+    A[Input] --> B[Process]
+    B --> C[Output]
+```
+````
+
+If `mmdc` is not available, diagrams fall back to styled code blocks.
+
+---
+
 ## 4. Last-Expression Output Rules
 
 You do **not** need to call explicit rendering functions like `render_chart(my_chart)`. Instead, `mdcc` uses a strict **last-expression output model**.
