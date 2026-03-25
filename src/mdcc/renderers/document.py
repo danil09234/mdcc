@@ -9,7 +9,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
-import latex2mathml.converter
+import matplotlib
+import matplotlib.pyplot as plt
 import mistune
 from jinja2 import Environment, select_autoescape
 from markupsafe import Markup, escape
@@ -121,8 +122,21 @@ _DOCUMENT_TEMPLATE = Environment(
         text-align: center;
         margin: 1rem 0;
       }
+      .mdcc-math-display svg {
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
+        height: auto;
+        max-width: 100%;
+      }
       .mdcc-math-inline {
         display: inline;
+        vertical-align: middle;
+      }
+      .mdcc-math-inline svg {
+        display: inline;
+        height: 1.2em;
+        vertical-align: middle;
       }
       .mdcc-math-fallback {
         font-family: monospace;
@@ -615,13 +629,29 @@ _DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
 _INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$|\s)(.+?)(?<!\s)\$(?!\$)")
 
 
+matplotlib.use("Agg")
+
+
 def _render_math(latex: str, *, display: bool) -> str:
     try:
-        mathml = latex2mathml.converter.convert(latex)
+        fig, ax = plt.subplots(figsize=(0.01, 0.01))
+        ax.set_axis_off()
+        fontsize = 16 if display else 12
+        ax.text(0, 0, f"${latex}$", fontsize=fontsize, math_fontfamily="cm")
+
+        buf = __import__("io").BytesIO()
+        fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02, transparent=True)
+        plt.close(fig)
+
+        svg = buf.getvalue().decode("utf-8")
+        # Strip XML declaration and DOCTYPE for inline embedding
+        svg = re.sub(r"<\?xml[^?]*\?>", "", svg)
+        svg = re.sub(r"<!DOCTYPE[^>]*>", "", svg)
+        svg = svg.strip()
+
         if display:
-            mathml = mathml.replace('display="inline"', 'display="block"')
-            return f'<div class="mdcc-math-display">{mathml}</div>'
-        return f'<span class="mdcc-math-inline">{mathml}</span>'
+            return f'<div class="mdcc-math-display">{svg}</div>'
+        return f'<span class="mdcc-math-inline">{svg}</span>'
     except Exception:
         escaped = html_module.escape(latex)
         if display:
