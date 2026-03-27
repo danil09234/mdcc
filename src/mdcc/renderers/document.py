@@ -33,8 +33,8 @@ from mdcc.references import (
     build_reference_registry,
 )
 
-_MARKDOWN_RENDERER = mistune.create_markdown(plugins=["table"])
-_MARKDOWN_AST_RENDERER = mistune.create_markdown(renderer="ast", plugins=["table"])
+_MARKDOWN_RENDERER = mistune.create_markdown(escape=False, plugins=["table"])
+_MARKDOWN_AST_RENDERER = mistune.create_markdown(escape=False, renderer="ast", plugins=["table"])
 _DOCUMENT_TEMPLATE = Environment(
     autoescape=select_autoescape(
         enabled_extensions=("html", "xml"),
