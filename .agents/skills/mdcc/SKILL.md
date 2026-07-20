@@ -243,10 +243,14 @@ When compilation fails, mdcc reports: file, block number, location, stage, and e
 | Empty `caption=""` | Either remove the attribute or provide a non-empty string |
 | Expecting variables from one block in another | Blocks are isolated — recompute or re-load data in each block |
 | Expecting `print()` output in the PDF | `print()` is diagnostics only; the last expression is the output |
+| Repeating the frontmatter `title` as a body `# H1` | Don't — mdcc already renders `title` as the document header, so a matching `# Title` prints the title twice. Start the body with prose or a `##` section heading |
 
 ---
 
 ## Complete Example Document
+
+The frontmatter `title` is rendered as the document header, so the body does **not** repeat it
+as an `# H1` — it opens directly with prose (and uses `##` for sections):
 
 ````markdown
 ---
@@ -254,8 +258,6 @@ title: "Sales Summary"
 author: "AI Analyst"
 date: "2024-06-01"
 ---
-
-# Sales Summary
 
 This report summarizes Q2 performance across regions.
 
