@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as html_module
+import io
 import re
 import shutil
 import subprocess
@@ -9,6 +10,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import matplotlib
+import matplotlib.font_manager
+import matplotlib.mathtext
+import matplotlib.pyplot as plt
 import mistune
 from jinja2 import Environment, select_autoescape
 from markupsafe import Markup, escape
@@ -115,6 +120,29 @@ _DOCUMENT_TEMPLATE = Environment(
       }
       .mdcc-caption--chart {
         margin: 0.5rem 0 0;
+      }
+      .mdcc-math-display {
+        text-align: center;
+        margin: 1rem 0;
+      }
+      .mdcc-math-display svg {
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
+        height: auto;
+        max-width: 100%;
+      }
+      .mdcc-math-inline {
+        display: inline;
+      }
+      .mdcc-math-inline svg {
+        display: inline-block;
+      }
+      .mdcc-math-fallback {
+        font-family: monospace;
+        background-color: #f3f4f6;
+        padding: 0.1rem 0.3rem;
+        border-radius: 0.2rem;
       }
       .mdcc-mermaid {
         text-align: center;
@@ -286,10 +314,16 @@ def _render_markdown_node(
     node: MarkdownNode,
     reference_registry: ReferenceRegistry,
 ) -> str:
+    text, math_placeholders = _extract_and_replace_math(node.text)
+
     try:
-        tokens_result, state = _MARKDOWN_AST_RENDERER.parse(node.text)
+        tokens_result, state = _MARKDOWN_AST_RENDERER.parse(text)
         tokens = cast(list[dict[str, Any]], tokens_result)
-        _replace_references_in_tokens(tokens, node, reference_registry)
+        _replace_references_in_tokens(
+            tokens,
+            MarkdownNode(node_id=node.node_id, text=text, location=node.location),
+            reference_registry,
+        )
         renderer = cast(mistune.HTMLRenderer, _MARKDOWN_RENDERER.renderer)
         html = renderer.render_tokens(tokens, state)
     except Exception as exc:
@@ -306,6 +340,7 @@ def _render_markdown_node(
         ) from exc
 
     html = _render_mermaid_blocks(html)
+    html = _restore_math_placeholders(html, math_placeholders)
 
     return (
         f'<section class="mdcc-markdown" data-node-id="{node.node_id}">{html}</section>'
@@ -536,35 +571,8 @@ _MERMAID_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-_MMDC_PATH: str | None = None
-
-
 def _find_mmdc() -> str | None:
-    global _MMDC_PATH
-    if _MMDC_PATH is not None:
-        return _MMDC_PATH
-
-    path = shutil.which("mmdc")
-    if path is not None:
-        _MMDC_PATH = path
-        return path
-
-    npx = shutil.which("npx")
-    if npx is not None:
-        try:
-            result = subprocess.run(
-                [npx, "--yes", "--package=@mermaid-js/mermaid-cli", "mmdc", "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                _MMDC_PATH = "npx"
-                return "npx"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    return None
+    return shutil.which("mmdc")
 
 
 def _render_mermaid_to_svg(code: str) -> str:
@@ -581,18 +589,9 @@ def _render_mermaid_to_svg(code: str) -> str:
         output_path = Path(tmp) / "output.svg"
         input_path.write_text(code, encoding="utf-8")
 
-        if mmdc == "npx":
-            cmd = [
-                "npx", "--yes", "--package=@mermaid-js/mermaid-cli",
-                "mmdc", "-i", str(input_path), "-o", str(output_path),
-                "-b", "transparent",
-            ]
-        else:
-            cmd = [mmdc, "-i", str(input_path), "-o", str(output_path), "-b", "transparent"]
-
         try:
             result = subprocess.run(
-                cmd,
+                [mmdc, "-i", str(input_path), "-o", str(output_path), "-b", "transparent"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -622,6 +621,154 @@ def _render_mermaid_blocks(html_text: str) -> str:
         return _render_mermaid_to_svg(code)
 
     return _MERMAID_BLOCK_RE.sub(replace_match, html_text)
+
+
+_DISPLAY_MATH_PLACEHOLDER = "MDCC_DISPLAY_MATH_{}"
+_INLINE_MATH_PLACEHOLDER = "MDCC_INLINE_MATH_{}"
+_DISPLAY_MATH_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+_INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$|\s)(.+?)(?<!\s)\$(?!\$)")
+
+
+matplotlib.use("Agg")
+
+_INLINE_MATH_FONTSIZE = 12
+_DISPLAY_MATH_FONTSIZE = 16
+_MATH_VECTOR_PARSER = matplotlib.mathtext.MathTextParser("path")
+
+
+def _math_metrics(tex: str, fontsize: int) -> tuple[float, float, float] | None:
+    """Return (width, height, depth) of the math in points at ``fontsize``.
+
+    ``height`` spans ascent + descent; ``depth`` is the descent below the
+    baseline. Returns None if metrics cannot be measured.
+    """
+    try:
+        try:
+            prop = matplotlib.font_manager.FontProperties(size=fontsize, math_fontfamily="cm")
+        except TypeError:  # older matplotlib without math_fontfamily kwarg
+            prop = matplotlib.font_manager.FontProperties(size=fontsize)
+        parse = _MATH_VECTOR_PARSER.parse(tex, dpi=72, prop=prop)
+        width = getattr(parse, "width", None)
+        height = getattr(parse, "height", None)
+        depth = getattr(parse, "depth", None)
+        if width is None or height is None or depth is None:  # very old API: plain tuple
+            width, height, depth = parse[0], parse[1], parse[2]
+        # dpi=72 -> values are already in points.
+        return float(width), float(height), float(depth)
+    except Exception:
+        return None
+
+
+def _apply_svg_style(svg: str, style: str) -> str:
+    """Attach an inline CSS style to the root <svg> element."""
+    return re.sub(r"<svg\b", f'<svg style="{style}"', svg, count=1)
+
+
+def _svg_from_figure(fig: Any) -> str:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="svg", transparent=True)
+    plt.close(fig)
+    svg = buf.getvalue().decode("utf-8")
+    svg = re.sub(r"<\?xml[^?]*\?>", "", svg)
+    svg = re.sub(r"<!DOCTYPE[^>]*>", "", svg)
+    return svg.strip()
+
+
+def _render_inline_math(latex: str, tex: str, fontsize: int) -> str:
+    metrics = _math_metrics(tex, fontsize)
+    if metrics is None:
+        raise ValueError("math metrics unavailable")
+    width_pt, height_pt, depth_pt = metrics
+
+    # Render onto a figure sized to the exact math box, with a small symmetric
+    # margin so nothing is clipped. Because the margin is symmetric, the ink
+    # stays centered inside the SVG, so ``vertical-align: middle`` centers the
+    # expression on the line. Sizing the figure to the metrics (instead of a
+    # tight bbox) guarantees the SVG's intrinsic aspect ratio matches the em
+    # dimensions we set, so the glyphs are not letterboxed or shifted.
+    margin_pt = 1.0
+    box_w = width_pt + 2 * margin_pt
+    box_h = height_pt + 2 * margin_pt
+    fig = plt.figure(figsize=(box_w / 72.0, box_h / 72.0))
+    fig.text(
+        margin_pt / box_w,
+        (depth_pt + margin_pt) / box_h,
+        tex,
+        fontsize=fontsize,
+        math_fontfamily="cm",
+        ha="left",
+        va="baseline",
+    )
+    svg = _svg_from_figure(fig)
+
+    style = (
+        f"height:{box_h / fontsize:.3f}em;"
+        f"width:{box_w / fontsize:.3f}em;"
+        f"vertical-align:middle;"
+    )
+    return f'<span class="mdcc-math-inline">{_apply_svg_style(svg, style)}</span>'
+
+
+def _render_math(latex: str, *, display: bool) -> str:
+    tex = f"${latex}$"
+    try:
+        if not display:
+            return _render_inline_math(latex, tex, _INLINE_MATH_FONTSIZE)
+
+        fig, ax = plt.subplots(figsize=(0.01, 0.01))
+        ax.set_axis_off()
+        ax.text(0, 0, tex, fontsize=_DISPLAY_MATH_FONTSIZE, math_fontfamily="cm")
+        fig.savefig(
+            (buf := io.BytesIO()),
+            format="svg",
+            bbox_inches="tight",
+            pad_inches=0.02,
+            transparent=True,
+        )
+        plt.close(fig)
+        svg = buf.getvalue().decode("utf-8")
+        svg = re.sub(r"<\?xml[^?]*\?>", "", svg)
+        svg = re.sub(r"<!DOCTYPE[^>]*>", "", svg)
+        return f'<div class="mdcc-math-display">{svg.strip()}</div>'
+    except Exception:
+        escaped = html_module.escape(latex)
+        if display:
+            return f'<div class="mdcc-math-display mdcc-math-fallback"><code>{escaped}</code></div>'
+        return f'<code class="mdcc-math-fallback">{escaped}</code>'
+
+
+def _extract_and_replace_math(
+    text: str,
+) -> tuple[str, dict[str, tuple[str, bool]]]:
+    placeholders: dict[str, tuple[str, bool]] = {}
+    counter = 0
+
+    def replace_display(match: re.Match[str]) -> str:
+        nonlocal counter
+        latex = match.group(1).strip()
+        key = _DISPLAY_MATH_PLACEHOLDER.format(counter)
+        placeholders[key] = (latex, True)
+        counter += 1
+        return key
+
+    def replace_inline(match: re.Match[str]) -> str:
+        nonlocal counter
+        latex = match.group(1).strip()
+        key = _INLINE_MATH_PLACEHOLDER.format(counter)
+        placeholders[key] = (latex, False)
+        counter += 1
+        return key
+
+    text = _DISPLAY_MATH_RE.sub(replace_display, text)
+    text = _INLINE_MATH_RE.sub(replace_inline, text)
+    return text, placeholders
+
+
+def _restore_math_placeholders(html_text: str, placeholders: dict[str, tuple[str, bool]]) -> str:
+    for key, (latex, display) in placeholders.items():
+        rendered = _render_math(latex, display=display)
+        html_text = html_text.replace(key, rendered)
+    return html_text
 
 
 __all__ = ["assemble_document", "render_intermediate_document"]

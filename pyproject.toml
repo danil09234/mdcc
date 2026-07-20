@@ -19,6 +19,7 @@ dependencies = [
     "typer>=0.24.1",
     "vl-convert-python>=1.9.0.post1",
     "weasyprint>=68.1",
+    "matplotlib>=3.10.0",
 ]
 
 [project.scripts]

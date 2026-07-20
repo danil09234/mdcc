@@ -38,7 +38,7 @@ Every mdcc file has three parts in this order:
 
 ```
 1. Frontmatter (optional YAML)
-2. Markdown narrative (prose, headings, lists)
+2. Markdown narrative (prose, headings, lists, tables, math, diagrams)
 3. Executable blocks (mdcc_chart / mdcc_table) — interleaved anywhere in the narrative
 ```
 
@@ -138,6 +138,57 @@ Metrics are summarized in @tbl:regional-summary.
 
 ---
 
+## Markdown Tables
+
+Standard markdown pipe-tables render as styled HTML tables in the PDF — no executable block needed.
+
+```markdown
+| Metric | Value | Status |
+|--------|-------|--------|
+| Score  | 0.85  | Pass   |
+| Rate   | 72%   | OK     |
+```
+
+Use `mdcc_table` blocks only when you need computed tables (DataFrames from code). For static data, plain markdown tables are simpler.
+
+---
+
+## Math Equations
+
+LaTeX math expressions are rendered to MathML via `latex2mathml` (pure Python, no external tools needed).
+
+**Inline math** — wrap with single dollar signs (no spaces after opening or before closing `$`):
+
+```markdown
+The standard deviation is $\sigma = \sqrt{\frac{1}{n}\sum (x_i - \bar{x})^2}$.
+```
+
+**Display math** — wrap with double dollar signs:
+
+```markdown
+$$E = mc^2$$
+```
+
+If a LaTeX expression cannot be parsed, it falls back to monospace code styling.
+
+---
+
+## Mermaid Diagrams
+
+Mermaid fenced code blocks are rendered to inline SVG images. Requires `mmdc` (mermaid-cli) installed and on PATH. Install: `npm install -g @mermaid-js/mermaid-cli`.
+
+````markdown
+```mermaid
+flowchart LR
+    A[Input] --> B[Process]
+    B --> C[Output]
+```
+````
+
+Supported diagram types: flowchart, sequence, pie, xychart-beta, quadrantChart, gantt, etc. If `mmdc` is not on PATH, diagrams fall back to a styled code block.
+
+---
+
 ## Caching
 
 mdcc caches successful block results in `.mdcc_cache/` next to the source file. The cache is automatically invalidated when:
@@ -197,7 +248,7 @@ When compilation fails, mdcc reports: file, block number, location, stage, and e
 
 ## Complete Example Document
 
-```markdown
+````markdown
 ---
 title: "Sales Summary"
 author: "AI Analyst"
@@ -208,6 +259,15 @@ date: "2024-06-01"
 
 This report summarizes Q2 performance across regions.
 
+## Key Metrics
+
+| Region | Revenue | Growth |
+|--------|---------|--------|
+| North  | $120K   | 12%    |
+| South  | $95K    | 8%     |
+
+The growth formula is $g = \frac{r_1 - r_0}{r_0} \times 100$.
+
 Regional figures are shown in @tbl:regional-summary and trends in @fig:revenue-trend.
 
 ```mdcc_table caption="Regional summary" label="tbl:regional-summary"
@@ -217,6 +277,12 @@ df = pd.DataFrame({
     "Growth": ["12%", "8%", "15%", "5%"],
 })
 df
+```
+
+```mermaid
+flowchart LR
+    A[Data Collection] --> B[Analysis]
+    B --> C[Report]
 ```
 
 ```mdcc_chart caption="Revenue by region" label="fig:revenue-trend"
@@ -230,7 +296,7 @@ alt.Chart(data).mark_bar().encode(
     color="Region:N",
 ).properties(width=500, height=300)
 ```
-```
+````
 
 ---
 
