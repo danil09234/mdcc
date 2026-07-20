@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import html as html_module
+import re
+import shutil
+import subprocess
+import tempfile
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import mistune
@@ -25,8 +31,8 @@ from mdcc.references import (
     build_reference_registry,
 )
 
-_MARKDOWN_RENDERER = mistune.create_markdown()
-_MARKDOWN_AST_RENDERER = mistune.create_markdown(renderer="ast")
+_MARKDOWN_RENDERER = mistune.create_markdown(plugins=["table"])
+_MARKDOWN_AST_RENDERER = mistune.create_markdown(renderer="ast", plugins=["table"])
 _DOCUMENT_TEMPLATE = Environment(
     autoescape=select_autoescape(
         enabled_extensions=("html", "xml"),
@@ -73,15 +79,22 @@ _DOCUMENT_TEMPLATE = Environment(
       .mdcc-chart {
         text-align: center;
       }
-      .mdcc-artifact table {
+      .mdcc-artifact table,
+      .mdcc-markdown table {
         border-collapse: collapse;
         width: 100%;
       }
       .mdcc-artifact th,
-      .mdcc-artifact td {
+      .mdcc-artifact td,
+      .mdcc-markdown th,
+      .mdcc-markdown td {
         border: 1px solid #d1d5db;
         padding: 0.4rem 0.5rem;
         text-align: left;
+      }
+      .mdcc-markdown th {
+        background-color: #f9fafb;
+        font-weight: bold;
       }
       .mdcc-artifact svg {
         display: block;
@@ -102,6 +115,16 @@ _DOCUMENT_TEMPLATE = Environment(
       }
       .mdcc-caption--chart {
         margin: 0.5rem 0 0;
+      }
+      .mdcc-mermaid {
+        text-align: center;
+      }
+      .mdcc-mermaid svg {
+        display: block;
+        height: auto;
+        margin-left: auto;
+        margin-right: auto;
+        max-width: 100%;
       }
     </style>
   </head>
@@ -281,6 +304,8 @@ def _render_markdown_node(
             ),
             source_snippet=node.location.snippet if node.location is not None else None,
         ) from exc
+
+    html = _render_mermaid_blocks(html)
 
     return (
         f'<section class="mdcc-markdown" data-node-id="{node.node_id}">{html}</section>'
@@ -504,6 +529,99 @@ def _source_snippet_for_assembled_node(node: AssembledDocumentNode) -> str | Non
     if node.markdown is not None and node.markdown.location is not None:
         return node.markdown.location.snippet
     return None
+
+
+_MERMAID_BLOCK_RE = re.compile(
+    r'<pre><code class="language-mermaid">(.*?)</code></pre>',
+    re.DOTALL,
+)
+
+_MMDC_PATH: str | None = None
+
+
+def _find_mmdc() -> str | None:
+    global _MMDC_PATH
+    if _MMDC_PATH is not None:
+        return _MMDC_PATH
+
+    path = shutil.which("mmdc")
+    if path is not None:
+        _MMDC_PATH = path
+        return path
+
+    npx = shutil.which("npx")
+    if npx is not None:
+        try:
+            result = subprocess.run(
+                [npx, "--yes", "--package=@mermaid-js/mermaid-cli", "mmdc", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                _MMDC_PATH = "npx"
+                return "npx"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    return None
+
+
+def _render_mermaid_to_svg(code: str) -> str:
+    mmdc = _find_mmdc()
+    if mmdc is None:
+        return (
+            '<div class="mdcc-mermaid mdcc-mermaid--fallback">'
+            f"<pre><code>{html_module.escape(code)}</code></pre>"
+            "</div>"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = Path(tmp) / "input.mmd"
+        output_path = Path(tmp) / "output.svg"
+        input_path.write_text(code, encoding="utf-8")
+
+        if mmdc == "npx":
+            cmd = [
+                "npx", "--yes", "--package=@mermaid-js/mermaid-cli",
+                "mmdc", "-i", str(input_path), "-o", str(output_path),
+                "-b", "transparent",
+            ]
+        else:
+            cmd = [mmdc, "-i", str(input_path), "-o", str(output_path), "-b", "transparent"]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                '<div class="mdcc-mermaid mdcc-mermaid--fallback">'
+                f"<pre><code>{html_module.escape(code)}</code></pre>"
+                "</div>"
+            )
+
+        if result.returncode != 0 or not output_path.exists():
+            return (
+                '<div class="mdcc-mermaid mdcc-mermaid--fallback">'
+                f"<pre><code>{html_module.escape(code)}</code></pre>"
+                "</div>"
+            )
+
+        svg = output_path.read_text(encoding="utf-8")
+        return f'<div class="mdcc-mermaid">{svg}</div>'
+
+
+def _render_mermaid_blocks(html_text: str) -> str:
+    def replace_match(match: re.Match[str]) -> str:
+        raw_code = match.group(1)
+        code = html_module.unescape(raw_code).strip()
+        return _render_mermaid_to_svg(code)
+
+    return _MERMAID_BLOCK_RE.sub(replace_match, html_text)
 
 
 __all__ = ["assemble_document", "render_intermediate_document"]
