@@ -1,0 +1,7 @@
+{
+  "name": "mdcc",
+  "description": "mdcc report compiler: skill + bundled pinned CLI + system-dependency setup",
+  "version": "0.1.0",
+  "homepage": "https://github.com/danil09234/mdcc",
+  "license": "MIT"
+}
