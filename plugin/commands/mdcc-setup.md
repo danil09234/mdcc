@@ -24,8 +24,17 @@ WeasyPrint needs Pango/Cairo/GObject shared libraries.
 
 ## 2. Mermaid CLI (optional — only for `mermaid` diagram blocks)
 
-`npm install -g @mermaid-js/mermaid-cli` (provides `mmdc` on PATH). Skip if the user does not
-use Mermaid diagrams; without it, diagrams fall back to a styled code block.
+`mmdc` renders diagrams by driving a headless Chrome via Puppeteer, so it needs **both** the
+CLI and a browser:
+
+1. `npm install -g @mermaid-js/mermaid-cli` (provides `mmdc` on PATH).
+2. `npx puppeteer browsers install chrome-headless-shell` — installs the Chrome build Puppeteer
+   needs. Without it, `mmdc` fails with `Could not find Chrome` and mdcc falls back to a styled
+   code block. If `mmdc` reports a specific required version (e.g. `131.0.6778.204`), install
+   that exact one: `npx puppeteer browsers install chrome-headless-shell@<version>`.
+
+Skip this whole section if the user does not use Mermaid diagrams; the code-block fallback is
+harmless.
 
 ## 3. Verify + warm the cache
 
