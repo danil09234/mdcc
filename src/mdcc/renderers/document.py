@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as html_module
+import io
 import re
 import shutil
 import subprocess
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import matplotlib
+import matplotlib.font_manager
+import matplotlib.mathtext
 import matplotlib.pyplot as plt
 import mistune
 from jinja2 import Environment, select_autoescape
@@ -131,12 +134,9 @@ _DOCUMENT_TEMPLATE = Environment(
       }
       .mdcc-math-inline {
         display: inline;
-        vertical-align: middle;
       }
       .mdcc-math-inline svg {
-        display: inline;
-        height: 1.2em;
-        vertical-align: middle;
+        display: inline-block;
       }
       .mdcc-math-fallback {
         font-family: monospace;
@@ -631,27 +631,105 @@ _INLINE_MATH_RE = re.compile(r"(?<!\$)\$(?!\$|\s)(.+?)(?<!\s)\$(?!\$)")
 
 matplotlib.use("Agg")
 
+_INLINE_MATH_FONTSIZE = 12
+_DISPLAY_MATH_FONTSIZE = 16
+_MATH_VECTOR_PARSER = matplotlib.mathtext.MathTextParser("path")
+
+
+def _math_metrics(tex: str, fontsize: int) -> tuple[float, float, float] | None:
+    """Return (width, height, depth) of the math in points at ``fontsize``.
+
+    ``height`` spans ascent + descent; ``depth`` is the descent below the
+    baseline. Returns None if metrics cannot be measured.
+    """
+    try:
+        try:
+            prop = matplotlib.font_manager.FontProperties(size=fontsize, math_fontfamily="cm")
+        except TypeError:  # older matplotlib without math_fontfamily kwarg
+            prop = matplotlib.font_manager.FontProperties(size=fontsize)
+        parse = _MATH_VECTOR_PARSER.parse(tex, dpi=72, prop=prop)
+        width = getattr(parse, "width", None)
+        height = getattr(parse, "height", None)
+        depth = getattr(parse, "depth", None)
+        if width is None or height is None or depth is None:  # very old API: plain tuple
+            width, height, depth = parse[0], parse[1], parse[2]
+        # dpi=72 -> values are already in points.
+        return float(width), float(height), float(depth)
+    except Exception:
+        return None
+
+
+def _apply_svg_style(svg: str, style: str) -> str:
+    """Attach an inline CSS style to the root <svg> element."""
+    return re.sub(r"<svg\b", f'<svg style="{style}"', svg, count=1)
+
+
+def _svg_from_figure(fig: Any) -> str:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="svg", transparent=True)
+    plt.close(fig)
+    svg = buf.getvalue().decode("utf-8")
+    svg = re.sub(r"<\?xml[^?]*\?>", "", svg)
+    svg = re.sub(r"<!DOCTYPE[^>]*>", "", svg)
+    return svg.strip()
+
+
+def _render_inline_math(latex: str, tex: str, fontsize: int) -> str:
+    metrics = _math_metrics(tex, fontsize)
+    if metrics is None:
+        raise ValueError("math metrics unavailable")
+    width_pt, height_pt, depth_pt = metrics
+
+    # Render onto a figure sized to the exact math box, with a small symmetric
+    # margin so nothing is clipped. Because the margin is symmetric, the ink
+    # stays centered inside the SVG, so ``vertical-align: middle`` centers the
+    # expression on the line. Sizing the figure to the metrics (instead of a
+    # tight bbox) guarantees the SVG's intrinsic aspect ratio matches the em
+    # dimensions we set, so the glyphs are not letterboxed or shifted.
+    margin_pt = 1.0
+    box_w = width_pt + 2 * margin_pt
+    box_h = height_pt + 2 * margin_pt
+    fig = plt.figure(figsize=(box_w / 72.0, box_h / 72.0))
+    fig.text(
+        margin_pt / box_w,
+        (depth_pt + margin_pt) / box_h,
+        tex,
+        fontsize=fontsize,
+        math_fontfamily="cm",
+        ha="left",
+        va="baseline",
+    )
+    svg = _svg_from_figure(fig)
+
+    style = (
+        f"height:{box_h / fontsize:.3f}em;"
+        f"width:{box_w / fontsize:.3f}em;"
+        f"vertical-align:middle;"
+    )
+    return f'<span class="mdcc-math-inline">{_apply_svg_style(svg, style)}</span>'
+
 
 def _render_math(latex: str, *, display: bool) -> str:
+    tex = f"${latex}$"
     try:
+        if not display:
+            return _render_inline_math(latex, tex, _INLINE_MATH_FONTSIZE)
+
         fig, ax = plt.subplots(figsize=(0.01, 0.01))
         ax.set_axis_off()
-        fontsize = 16 if display else 12
-        ax.text(0, 0, f"${latex}$", fontsize=fontsize, math_fontfamily="cm")
-
-        buf = __import__("io").BytesIO()
-        fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.02, transparent=True)
+        ax.text(0, 0, tex, fontsize=_DISPLAY_MATH_FONTSIZE, math_fontfamily="cm")
+        fig.savefig(
+            (buf := io.BytesIO()),
+            format="svg",
+            bbox_inches="tight",
+            pad_inches=0.02,
+            transparent=True,
+        )
         plt.close(fig)
-
         svg = buf.getvalue().decode("utf-8")
-        # Strip XML declaration and DOCTYPE for inline embedding
         svg = re.sub(r"<\?xml[^?]*\?>", "", svg)
         svg = re.sub(r"<!DOCTYPE[^>]*>", "", svg)
-        svg = svg.strip()
-
-        if display:
-            return f'<div class="mdcc-math-display">{svg}</div>'
-        return f'<span class="mdcc-math-inline">{svg}</span>'
+        return f'<div class="mdcc-math-display">{svg.strip()}</div>'
     except Exception:
         escaped = html_module.escape(latex)
         if display:
