@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # Pin the exact mdcc release. Bump this together with the plugin version.
-MDCC_REF="v0.1.0"
+MDCC_REF="v0.1.1"
 MDCC_SPEC="git+https://github.com/danil09234/mdcc@${MDCC_REF}"
 
 # macOS: WeasyPrint dlopen()s Pango/Cairo/GObject, which live under the Homebrew
