@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# mdcc launcher shipped with the Claude Code plugin.
+#
+# While the plugin is enabled, this directory is on the Bash tool's PATH, so
+# both skill-driven agents and humans can invoke `mdcc` by bare name — with no
+# global install and a version pinned to the plugin (below). Updates arrive via
+# `/plugin update`.
+set -euo pipefail
+
+# Pin the exact mdcc release. Bump this together with the plugin version.
+MDCC_REF="v0.1.1"
+MDCC_SPEC="git+https://github.com/danil09234/mdcc@${MDCC_REF}"
+
+# macOS: WeasyPrint dlopen()s Pango/Cairo/GObject, which live under the Homebrew
+# prefix and are not on the default loader search path. Export the fallback path
+# so every invocation works without the caller setting it. This export survives
+# into the (non-restricted) uv/python child processes, so System Integrity
+# Protection does not strip it — unlike a path that runs through a protected
+# system binary.
+if [[ "$(uname)" == "Darwin" ]]; then
+  brew_prefix="$(command -v brew >/dev/null 2>&1 && brew --prefix 2>/dev/null || echo /opt/homebrew)"
+  export DYLD_FALLBACK_LIBRARY_PATH="${brew_prefix}/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "mdcc: 'uv' is required but not found. Install it (https://docs.astral.sh/uv/) or run /mdcc-setup." >&2
+  exit 127
+fi
+
+# `uv run` (not `uvx`) is used deliberately: uvx / `uv tool run` does not carry
+# DYLD_FALLBACK_LIBRARY_PATH into the launched console-script process on macOS,
+# so WeasyPrint fails to load its native libraries. `uv run --with` does.
+# --no-project so it works from any working directory regardless of cwd.
+# uv resolves + builds the pinned spec once and serves it from cache thereafter.
+exec uv run --no-project --with "${MDCC_SPEC}" mdcc "$@"
